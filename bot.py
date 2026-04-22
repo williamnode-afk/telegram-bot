@@ -4,8 +4,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # 🔑 Variables d'environnement
-TOKEN = os.getenv("token")
-CHAT_ID = os.getenv("chat_id")
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 if not TOKEN:
     raise ValueError("TOKEN manquant")
