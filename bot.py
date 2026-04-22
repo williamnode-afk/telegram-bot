@@ -1,30 +1,37 @@
+import os
+import asyncio
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-TOKEN = "8705712461:AAFATHhFqzyIX2APIGAKGOxn_xuuFZaYusc"
+TOKEN = os.getenv("token")
+CHAT_ID = int(os.getenv("chat_id"))
 
-# Commande /start
+# ===== COMMANDES =====
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Commande /start reçue")
     await update.message.reply_text("🔥 Bot actif et prêt !")
 
-# Commande /news
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Commande /news reçue")
-    await update.message.reply_text("📰 News du marché (à connecter plus tard)")
+    await update.message.reply_text("📰 News marché (bientôt connecté API)")
 
-# Commande /btc
 async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    print("Commande /btc reçue")
     await update.message.reply_text("💰 BTC : 67 000$ (exemple)")
 
-# Création app
-app = ApplicationBuilder().token(TOKEN).build()
+async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("📉 Macro : données en attente API")
 
-# Ajout des commandes
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("news", news))
-app.add_handler(CommandHandler("btc", btc))
+# ===== BOT =====
 
-print("Bot en écoute...")
-app.run_polling()
+async def main():
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("btc", btc))
+    app.add_handler(CommandHandler("macro", macro))
+
+    print("Bot en ligne...")
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
