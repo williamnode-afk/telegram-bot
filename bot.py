@@ -10,7 +10,10 @@ CHAT_ID = os.getenv("CHAT_ID")
 if not TOKEN:
     raise ValueError("TOKEN manquant")
 
+# ========================
 # COMMANDES
+# ========================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Bot actif et prêt !")
 
@@ -23,7 +26,10 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 Macro économie (à venir)")
 
+# ========================
 # AUTO MESSAGE
+# ========================
+
 async def auto_alert(app):
     while True:
         try:
@@ -34,21 +40,28 @@ async def auto_alert(app):
         except Exception as e:
             print("Erreur envoi message:", e)
 
-        await asyncio.sleep(3600)
+        await asyncio.sleep(3600)  # 1 heure
 
+# ========================
 # MAIN
-async def main():
+# ========================
+
+def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # commandes
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("btc", btc))
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("macro", macro))
 
-    asyncio.create_task(auto_alert(app))
+    # lancer tâche auto
+    asyncio.get_event_loop().create_task(auto_alert(app))
 
     print("Bot en ligne 🚀")
-    await app.run_polling()
+
+    app.run_polling()
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
