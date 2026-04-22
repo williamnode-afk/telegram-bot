@@ -47,5 +47,6 @@ async def main():
     await app.run_polling()
 
 # --- RUN ---
+# update
 if __name__ == "__main__":
     asyncio.run(main())
