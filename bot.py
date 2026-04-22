@@ -3,13 +3,17 @@ import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# 🔑 Variables d'environnement
 TOKEN = os.getenv("token")
 CHAT_ID = os.getenv("chat_id")
 
-# --- COMMANDES ---
+if not TOKEN:
+    raise ValueError("TOKEN manquant")
+
+# ---- COMMANDES ----
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 Bot actif et prêt !")
+    await update.message.reply_text("🤖 Bot actif et prêt !")
 
 async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💰 BTC : 67 000$ (exemple)")
@@ -20,17 +24,21 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🌍 Macro économie (à venir)")
 
-# --- AUTO MESSAGE ---
+# ---- AUTO MESSAGE ----
 
 async def auto_alert(app):
     while True:
-        await app.bot.send_message(
-            chat_id=CHAT_ID,
-            text="🚨 ALERTE MARCHÉ : surveillance active"
-        )
-        await asyncio.sleep(3600)
+        try:
+            await app.bot.send_message(
+                chat_id=CHAT_ID,
+                text="🚨 ALERTE MARCHÉ : surveillance active"
+            )
+        except Exception as e:
+            print(f"Erreur envoi message : {e}")
 
-# --- MAIN ---
+        await asyncio.sleep(3600)  # toutes les 1h
+
+# ---- MAIN ----
 
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
@@ -40,14 +48,17 @@ async def main():
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("macro", macro))
 
-    # Lancer auto alert en background
-    asyncio.create_task(auto_alert(app))
-
     print("Bot en ligne 🚀")
+
+    # lancer la tâche après démarrage
+    async def post_init(app):
+        asyncio.create_task(auto_alert(app))
+
+    app.post_init = post_init
+
     await app.run_polling()
 
-# --- RUN ---
-# update
-# relaunch
+# ---- RUN ----
+
 if __name__ == "__main__":
     asyncio.run(main())
