@@ -48,6 +48,6 @@ async def main():
 
 # --- RUN ---
 # update
-# force deploy
+# relaunch
 if __name__ == "__main__":
     asyncio.run(main())
