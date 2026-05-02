@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -29,7 +28,6 @@ app.add_handler(CommandHandler("btc", btc))
 
 print("Bot en écoute...")
 app.run_polling()
-=======
 import os
 import asyncio
 from telegram import Update
@@ -97,4 +95,3 @@ def main():
 
 if __name__ == "__main__":
     main()
->>>>>>> 6e4c149316d4cea42b077e1aecc506a2dd6d7d05
