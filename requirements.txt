@@ -1,7 +1,2 @@
-<<<<<<< HEAD
 python-telegram-bot==20.7
 requests
-=======
-python-telegram-bot==20.7 
-requests
->>>>>>> 6e4c149316d4cea42b077e1aecc506a2dd6d7d05
