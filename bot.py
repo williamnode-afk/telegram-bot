@@ -8,6 +8,7 @@ TOKEN = os.getenv("TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔥 Bot actif et prêt !")
+    print("STAR COMMAND RECEIVED")
 
 async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("💰 BTC : 67 000$ (exemple)")
@@ -29,7 +30,8 @@ async def main():
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("macro", macro))
 
-    print("Bot lancé 🚀")
+    print("BOT STARTED")
+    print("TOKEN =", TOKEN)
 
     await app.run_polling(drop_pending_updates=True)
 
