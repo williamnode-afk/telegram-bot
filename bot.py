@@ -2,7 +2,7 @@ import os
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("TOKEN")
 
 # ===== COMMANDES =====
 
@@ -31,7 +31,7 @@ async def main():
 
     print("Bot lancé 🚀")
 
-    await app.run_polling()
+    await app.run_polling(drop_pending_updates=True)
 
 # ===== LANCEMENT =====
 
