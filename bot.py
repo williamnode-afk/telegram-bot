@@ -21,7 +21,10 @@ async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== MAIN =====
 
+
 async def main():
+    print("BOT STARTED")
+    print("TOKEN =", TOKEN)
     app = ApplicationBuilder().token(TOKEN).build()
 
     # AJOUT DES COMMANDES (IMPORTANT)
@@ -30,9 +33,8 @@ async def main():
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("macro", macro))
 
-    print("BOT STARTED")
-    print("TOKEN =", TOKEN)
-
+    print("BOT RUNNING")
+   
     await app.run_polling(drop_pending_updates=True)
 
 # ===== LANCEMENT =====
