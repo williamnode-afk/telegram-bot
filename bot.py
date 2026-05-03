@@ -1,63 +1,89 @@
-import os
-import time
 import requests
+import time
+import os
+import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
+# ================= CONFIG =================
 TOKEN = os.getenv("TOKEN")
 NEWS_API = os.getenv("NEWSAPI_KEY")
-CHAT_ID = os.getenv("CHAT_ID")
 
-# =========================
-# RESET TELEGRAM
-# =========================
-def clear_webhook():
+# ================= LOGS =================
+logging.basicConfig(level=logging.INFO)
+
+# ================= CACHE =================
+CACHE = {}
+
+def safe_request(url, key):
     try:
-        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
-    except:
-        pass
+        if key in CACHE and time.time() - CACHE[key]["time"] < 60:
+            return CACHE[key]["data"]
 
-# =========================
-# START
-# =========================
+        r = requests.get(url, timeout=5)
+        data = r.json()
+
+        CACHE[key] = {"data": data, "time": time.time()}
+        return data
+
+    except Exception as e:
+        logging.error(f"API ERROR {key}: {e}")
+        return CACHE.get(key, {}).get("data", None)
+
+# ================= RISK MANAGEMENT =================
+def risk_management(score):
+    if score >= 80:
+        return "🔥 RISQUE ÉLEVÉ"
+    elif score >= 60:
+        return "⚡ RISQUE MODÉRÉ"
+    elif score >= 40:
+        return "🛡️ RISQUE FAIBLE"
+    else:
+        return "❄️ MARCHÉ FAIBLE"
+
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 BOT TRADING ACTIF\n\n"
-        "/btc\n/nasdaq\n/macro\n/news\n/decision\n"
-        "/correlation\n/timing\n/manipulation\n/risk"
+        "🔥 BOT TRADING HEDGE FUND PRO\n\n"
+        "/btc\n/nasdaq\n/macro\n/news\n/decision\n/central"
     )
 
-# =========================
-# BTC
-# =========================
+# ================= BTC =================
 async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = safe_request("https://api.coingecko.com/api/v3/coins/bitcoin", "btc")
+
+    if not data:
+        await update.message.reply_text("⚠️ BTC indisponible")
+        return
+
     try:
-        data = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
         price = data["market_data"]["current_price"]["usd"]
         change = data["market_data"]["price_change_percentage_24h"]
         volume = data["market_data"]["total_volume"]["usd"]
 
-        manipulation = "🐋 Mouvement suspect" if abs(change) > 5 and volume > 30_000_000_000 else "✅ Stable"
+        manipulation = abs(change) > 5 and volume > 30_000_000_000
 
         await update.message.reply_text(
-            f"₿ BTC\n\nPrix : {price}$\nVariation : {change:.2f}%\n{manipulation}"
+            f"₿ BTC\n\nPrix : {price}$\nVariation : {change:.2f}%\n"
+            f"🐋 Manipulation : {'Oui' if manipulation else 'Non'}"
         )
     except:
-        await update.message.reply_text("❌ Données BTC indisponibles")
+        await update.message.reply_text("⚠️ Erreur BTC")
 
-# =========================
-# NASDAQ
-# =========================
+# ================= NASDAQ =================
 async def nasdaq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        r = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC").json()
-        result = r.get("quoteResponse", {}).get("result", [])
-        if not result:
-            raise Exception()
+    data = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC", "nasdaq")
 
-        data = result[0]
-        price = data.get("regularMarketPrice", 0)
-        change = data.get("regularMarketChangePercent", 0)
+    if not data:
+        await update.message.reply_text("⚠️ Nasdaq indisponible")
+        return
+
+    try:
+        result = data.get("quoteResponse", {}).get("result", [])
+        d = result[0]
+
+        price = d.get("regularMarketPrice", 0)
+        change = d.get("regularMarketChangePercent", 0)
 
         trend = "🟢 Haussier" if change > 1 else "🔴 Baissier" if change < -1 else "🟡 Stable"
 
@@ -65,161 +91,148 @@ async def nasdaq(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📈 NASDAQ\n\nPrix : {price}\nVariation : {change:.2f}%\n{trend}"
         )
     except:
-        await update.message.reply_text("❌ Nasdaq indisponible")
+        await update.message.reply_text("⚠️ Erreur Nasdaq")
 
-# =========================
-# MACRO (Yahoo)
-# =========================
+# ================= MACRO =================
 async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    gold = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC=F", "gold")
+    brent = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=BZ=F", "brent")
+
+    if not gold or not brent:
+        await update.message.reply_text("⚠️ Macro indisponible")
+        return
+
     try:
-        gold = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC=F").json()
-        brent = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=BZ=F").json()
+        g = gold.get("quoteResponse", {}).get("result", [{}])[0]
+        b = brent.get("quoteResponse", {}).get("result", [{}])[0]
 
-        g = gold["quoteResponse"]["result"][0]
-        b = brent["quoteResponse"]["result"][0]
+        gold_change = g.get("regularMarketChangePercent", 0)
+        brent_price = b.get("regularMarketPrice", 0)
 
-        gold_price = g["regularMarketPrice"]
-        gold_change = g["regularMarketChangePercent"]
-        brent_price = b["regularMarketPrice"]
-
-        score = 0
-
-        gold_state = "🔴 Risque" if gold_change > 0 else "🟢 Confiance"
-        score += -1 if gold_change > 0 else 1
-
-        brent_state = "🔴 Inflation" if brent_price > 85 else "🟢 Stable"
-        score += -1 if brent_price > 85 else 1
-
+        score = (-1 if gold_change > 0 else 1) + (-1 if brent_price > 85 else 1)
         direction = "🟢 BULLISH" if score >= 2 else "🔴 BEARISH" if score <= -2 else "🟡 NEUTRE"
 
         await update.message.reply_text(
-            f"🌍 MACRO\n\n🟡 Or : {gold_price}$ → {gold_state}\n"
-            f"🛢️ Brent : {brent_price}$ → {brent_state}\n\n"
-            f"📊 Direction : {direction}"
+            f"🌍 MACRO\n\nOr Δ : {gold_change:.2f}%\nBrent : {brent_price}$\n\nDirection : {direction}"
         )
-
     except:
-        await update.message.reply_text("❌ Données macro indisponibles")
+        await update.message.reply_text("⚠️ Erreur macro")
 
-# =========================
-# NEWS
-# =========================
-def analyse_news(t):
-    t = t.lower()
-    if "oil" in t: return "🛢️ pétrole"
-    if "inflation" in t: return "📉 marchés"
-    if "bitcoin" in t: return "₿ crypto"
-    if "tech" in t: return "📈 Nasdaq"
-    if "war" in t: return "⚠️ or"
-    return "⚪ neutre"
-
+# ================= NEWS =================
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        url = f"https://newsapi.org/v2/top-headlines?category=business&language=en&apiKey={NEWS_API}"
-        data = requests.get(url).json()
+    url = f"https://newsapi.org/v2/top-headlines?category=business&language=en&pageSize=3&apiKey={NEWS_API}"
+    data = safe_request(url, "news")
 
-        msg = "📰 NEWS\n\n"
-        for a in data.get("articles", [])[:3]:
-            title = a["title"]
-            impact = analyse_news(title)
-            msg += f"{title}\n➡️ {impact}\n\n"
+    if not data:
+        await update.message.reply_text("⚠️ News indisponibles")
+        return
 
-        await update.message.reply_text(msg)
-    except:
-        await update.message.reply_text("❌ News indisponibles")
+    msg = "📰 NEWS\n\n"
+    for a in data.get("articles", [])[:3]:
+        msg += f"{a.get('title','...')}\n\n"
 
-# =========================
-# DECISION
-# =========================
+    await update.message.reply_text(msg)
+
+# ================= DECISION =================
 async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         score = 50
 
-        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
-        btc_change = btc["market_data"]["price_change_percentage_24h"]
+        btc = safe_request("https://api.coingecko.com/api/v3/coins/bitcoin", "btc")
+        nasdaq = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC", "nasdaq")
 
-        nasdaq = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC").json()
-        n_change = nasdaq["quoteResponse"]["result"][0]["regularMarketChangePercent"]
+        btc_change = btc.get("market_data", {}).get("price_change_percentage_24h", 0) if btc else 0
+        n_res = nasdaq.get("quoteResponse", {}).get("result", []) if nasdaq else []
+        n_change = n_res[0].get("regularMarketChangePercent", 0) if n_res else 0
 
         score += 15 if btc_change > 1 else -15 if btc_change < -1 else 0
         score += 10 if n_change > 0.5 else -10 if n_change < -0.5 else 0
 
         signal = "🟢 ACHAT" if score >= 70 else "🔴 VENTE" if score <= 30 else "🟡 ATTENTE"
-        timing = "🎯 Bon timing" if score > 65 else "⏳ Attente"
+
+        await update.message.reply_text(f"🧠 DÉCISION\n\nScore : {score}/100\nSignal : {signal}")
+    except:
+        await update.message.reply_text("⚠️ Erreur décision")
+
+# ================= CENTRAL PRO =================
+async def central(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        score = 50
+        details = []
+
+        btc = safe_request("https://api.coingecko.com/api/v3/coins/bitcoin", "btc")
+        btc_change = btc.get("market_data", {}).get("price_change_percentage_24h", 0) if btc else 0
+        volume = btc.get("market_data", {}).get("total_volume", {}).get("usd", 0) if btc else 0
+
+        nasdaq = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC", "nasdaq")
+        n_res = nasdaq.get("quoteResponse", {}).get("result", []) if nasdaq else []
+        n_change = n_res[0].get("regularMarketChangePercent", 0) if n_res else 0
+
+        gold = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC=F", "gold")
+        brent = safe_request("https://query1.finance.yahoo.com/v7/finance/quote?symbols=BZ=F", "brent")
+
+        g = gold.get("quoteResponse", {}).get("result", [{}])[0] if gold else {}
+        b = brent.get("quoteResponse", {}).get("result", [{}])[0] if brent else {}
+
+        gold_change = g.get("regularMarketChangePercent", 0)
+        brent_price = b.get("regularMarketPrice", 0)
+
+        if btc_change > 2:
+            score += 20
+            details.append("BTC bullish")
+        elif btc_change < -2:
+            score -= 20
+            details.append("BTC bearish")
+
+        if n_change > 1:
+            score += 15
+            details.append("NASDAQ bullish")
+        elif n_change < -1:
+            score -= 15
+            details.append("NASDAQ bearish")
+
+        if gold_change > 0:
+            score -= 10
+            details.append("Risk OFF")
+        else:
+            score += 10
+
+        if brent_price > 85:
+            score -= 5
+        else:
+            score += 5
+
+        manipulation = abs(btc_change) > 5 and volume > 30_000_000_000
+        divergence = (btc_change > 0 and n_change < 0) or (btc_change < 0 and n_change > 0)
+
+        if manipulation:
+            signal = "⛔ MANIPULATION"
+        elif divergence:
+            signal = "⚠️ DIVERGENCE"
+        else:
+            if score >= 85:
+                signal = "🚀 BUY AGRESSIF"
+            elif score >= 70:
+                signal = "🟢 BUY"
+            elif score <= 15:
+                signal = "💀 SELL AGRESSIF"
+            elif score <= 35:
+                signal = "🔴 SELL"
+            else:
+                signal = "🟡 WAIT"
+
+        risk = risk_management(score)
 
         await update.message.reply_text(
-            f"🧠 DÉCISION\n\nScore : {score}/100\nSignal : {signal}\n{timing}"
+            f"🧠 BOT CENTRAL PRO\n\nScore : {score}/100\nSignal : {signal}\n{risk}\n\n📊 {', '.join(details)}"
         )
 
-    except:
-        await update.message.reply_text("❌ Erreur décision")
+    except Exception as e:
+        logging.error(e)
+        await update.message.reply_text("⚠️ Erreur central")
 
-# =========================
-# AUTRES COMMANDES
-# =========================
-async def correlation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
-        b = btc["market_data"]["price_change_percentage_24h"]
-
-        nasdaq = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC").json()
-        n = nasdaq["quoteResponse"]["result"][0]["regularMarketChangePercent"]
-
-        result = "🟢 Alignement" if (b > 0 and n > 0) else "🔴 Alignement" if (b < 0 and n < 0) else "⚠️ Divergence"
-
-        await update.message.reply_text(f"BTC {b:.2f}% | Nasdaq {n:.2f}%\n{result}")
-    except:
-        await update.message.reply_text("❌ Erreur corrélation")
-
-async def timing(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
-        change = btc["market_data"]["price_change_percentage_24h"]
-
-        msg = "🎯 BUY possible" if change > 2 else "🔴 SELL possible" if change < -2 else "⏳ Attente"
-        await update.message.reply_text(msg)
-    except:
-        await update.message.reply_text("❌ Erreur timing")
-
-async def manipulation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
-        c = btc["market_data"]["price_change_percentage_24h"]
-        v = btc["market_data"]["total_volume"]["usd"]
-
-        msg = "🐋 Suspicion manipulation" if abs(c) > 5 and v > 30_000_000_000 else "✅ Normal"
-        await update.message.reply_text(msg)
-    except:
-        await update.message.reply_text("❌ Erreur")
-
-async def risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "💰 Gestion du risque\n\n1-2% max par trade\nToujours SL\nPas d'overtrade"
-    )
-
-# =========================
-# ALERTES AUTO
-# =========================
-async def alertes(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
-        change = btc["market_data"]["price_change_percentage_24h"]
-
-        if abs(change) > 4:
-            await context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"🚨 BTC mouvement : {change:.2f}%"
-            )
-    except:
-        pass
-
-# =========================
-# MAIN
-# =========================
+# ================= MAIN =================
 def main():
-    clear_webhook()
-    time.sleep(2)
-
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -228,14 +241,10 @@ def main():
     app.add_handler(CommandHandler("macro", macro))
     app.add_handler(CommandHandler("news", news))
     app.add_handler(CommandHandler("decision", decision))
-    app.add_handler(CommandHandler("correlation", correlation))
-    app.add_handler(CommandHandler("timing", timing))
-    app.add_handler(CommandHandler("manipulation", manipulation))
-    app.add_handler(CommandHandler("risk", risk))
+    app.add_handler(CommandHandler("central", central))
 
-    app.job_queue.run_repeating(alertes, interval=900, first=10)
-
-    app.run_polling(drop_pending_updates=True)
+    print("✅ BOT LANCÉ")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
