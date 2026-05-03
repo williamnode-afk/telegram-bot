@@ -7,8 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
-CRYPTO_API = os.getenv("CRYPTO_API")
-FMP_API = os.getenv("FMP_API")
+NEWS_API = os.getenv("NEWSAPI_KEY")
 
 # =========================
 # FIX TELEGRAM
@@ -29,8 +28,10 @@ history = {
     "BRENT": []
 }
 
+last_news = []
+
 # =========================
-# FETCH PRICES
+# FETCH DATA
 # =========================
 def get_price(symbol):
     try:
@@ -56,10 +57,7 @@ def rsi(prices):
     gains, losses = [], []
     for i in range(1, len(prices)):
         diff = prices[i] - prices[i-1]
-        if diff > 0:
-            gains.append(diff)
-        else:
-            losses.append(abs(diff))
+        (gains if diff > 0 else losses).append(abs(diff))
     avg_gain = sum(gains)/len(gains) if gains else 0.01
     avg_loss = sum(losses)/len(losses) if losses else 0.01
     rs = avg_gain / avg_loss
@@ -70,97 +68,161 @@ def rsi(prices):
 # =========================
 def score(prices):
     s = 50
-    if prices[-1] > prices[0]:
-        s += 15
-    if prices[-1] >= max(prices[-10:]):
-        s += 15
-    if prices[-1] <= min(prices[-10:]):
-        s -= 15
+    if prices[-1] > prices[0]: s += 15
+    if prices[-1] >= max(prices[-10:]): s += 15
+    if prices[-1] <= min(prices[-10:]): s -= 15
 
     r = rsi(prices)
     if r:
-        if r < 30:
-            s += 10
-        elif r > 70:
-            s -= 10
+        if r < 30: s += 10
+        elif r > 70: s -= 10
 
     return max(0, min(100, s))
 
-def signal(score):
-    if score >= 70:
-        return "🟢 BUY"
-    elif score <= 30:
-        return "🔴 SELL"
+def signal(s):
+    if s >= 70: return "🟢 BUY"
+    elif s <= 30: return "🔴 SELL"
     return "⚪ WAIT"
 
 # =========================
-# MARKET CONTEXT
+# TIMING
 # =========================
-def market_context():
-    if len(history["BTC"]) < 10:
-        return "UNKNOWN"
+def precise_entry(p):
+    if len(p) < 12:
+        return "WAIT"
 
-    btc = history["BTC"][-1] - history["BTC"][0]
-    nasdaq = history["NASDAQ"][-1] - history["NASDAQ"][0]
+    high = max(p[-6:-1])
+    low = min(p[-6:-1])
 
-    if btc > 0 and nasdaq > 0:
-        return "🟢 RISK-ON"
-    elif btc < 0 and nasdaq < 0:
-        return "🔴 RISK-OFF"
-    return "⚪ MIXED"
+    p0, p1, p2 = p[-1], p[-2], p[-3]
+
+    if p1 <= high and p0 > high:
+        return "BREAKOUT"
+    if p0 < high and p1 > high:
+        return "PULLBACK"
+    if p1 < high and p0 > p1 and p0 > p2:
+        return "🎯 ENTRY"
+    if p1 >= low and p0 < low:
+        return "BREAKDOWN"
+
+    return "WAIT"
 
 # =========================
-# NEWS
+# MANIPULATION
+# =========================
+def detect_manipulation(p):
+    if len(p) < 5:
+        return None
+
+    move = (p[-1] - p[-2]) / p[-2] * 100
+    prev = (p[-2] - p[-3]) / p[-3] * 100
+
+    if abs(prev) > 1.2 and abs(move) < 0.2:
+        return "⚠️ Rejet rapide (piège)"
+    if abs(move) > 1.5:
+        return "🐋 Spike suspect"
+
+    return None
+
+# =========================
+# NEWS ANALYSIS
+# =========================
+def analyze_news(text):
+    text = text.lower()
+
+    bullish = ["growth", "surge", "strong", "positive", "beat"]
+    bearish = ["inflation", "war", "crash", "recession", "rate hike"]
+
+    score = 0
+    for w in bullish:
+        if w in text:
+            score += 1
+    for w in bearish:
+        if w in text:
+            score -= 1
+
+    confidence = min(abs(score) * 50, 100)
+
+    if score > 0:
+        return "🟢 BULLISH", "BUY 📈", confidence
+    elif score < 0:
+        return "🔴 BEARISH", "SELL 📉", confidence
+    return "⚪ NEUTRE", "WAIT", confidence
+
+# =========================
+# GET NEWS
 # =========================
 def get_news():
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/stock_news?limit=3&apikey={FMP_API}"
-        data = requests.get(url).json()
+    url = f"https://newsapi.org/v2/top-headlines?category=business&language=en&apiKey={NEWS_API}"
+    r = requests.get(url)
+    data = r.json()
+    articles = data.get("articles", [])
 
-        news = []
-        for n in data:
-            news.append(f"📰 {n['title']}")
+    results = []
 
-        return "\n".join(news)
-    except:
-        return "❌ Erreur news"
+    for a in articles[:5]:
+        title = a.get("title", "")
+
+        if title in last_news:
+            continue
+
+        impact, sig, conf = analyze_news(title)
+
+        if conf >= 50:
+            results.append((title, impact, sig, conf))
+            last_news.append(title)
+
+    return results
 
 # =========================
-# COMMANDES
+# COMMANDS
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 BOT NEWS PRO ACTIF")
+    await update.message.reply_text("🔥 BOT TRADING NEWS ACTIF")
 
     chat_id = update.effective_chat.id
     context.job_queue.run_repeating(scan, interval=60, first=5, chat_id=chat_id)
+    context.job_queue.run_repeating(alerts, interval=900, first=10)
 
 async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    price = get_btc()
-    await update.message.reply_text(f"₿ BTC: {price}$")
+    await update.message.reply_text(f"₿ BTC: {get_btc()}$")
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    n = get_news()
-    await update.message.reply_text(n)
+    news = get_news()
+    if not news:
+        await update.message.reply_text("Aucune news importante")
+        return
 
-async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ctx = market_context()
-    await update.message.reply_text(f"🌍 {ctx}")
+    text = "🚨 NEWS IMPACT\n\n"
+    for t, imp, sig, conf in news:
+        text += f"{t}\n{imp} | {sig} | {conf}%\n\n"
+
+    await update.message.reply_text(text)
 
 # =========================
-# SCAN AUTO
+# ALERTS AUTO
 # =========================
-async def scan(context: ContextTypes.DEFAULT_TYPE):
+async def alerts(context):
+    news = get_news()
+    if not news:
+        return
+
+    text = "🚨 ALERT NEWS 🔥\n\n"
+    for t, imp, sig, conf in news:
+        text += f"{t}\n{imp} | {sig} | {conf}%\n\n"
+
+    await context.bot.send_message(chat_id=os.getenv("CHAT_ID"), text=text)
+
+# =========================
+# SCAN
+# =========================
+async def scan(context):
     btc = get_btc()
     nasdaq = get_price("^IXIC")
     gold = get_price("GC=F")
     brent = get_price("BZ=F")
 
-    data = {
-        "BTC": btc,
-        "NASDAQ": nasdaq,
-        "GOLD": gold,
-        "BRENT": brent
-    }
+    data = {"BTC": btc, "NASDAQ": nasdaq, "GOLD": gold, "BRENT": brent}
 
     for k, v in data.items():
         if v:
@@ -168,21 +230,23 @@ async def scan(context: ContextTypes.DEFAULT_TYPE):
             if len(history[k]) > 50:
                 history[k].pop(0)
 
-    for asset in history:
-        if len(history[asset]) < 10:
-            continue
-
-        s = score(history[asset])
+    if len(history["BTC"]) > 10:
+        s = score(history["BTC"])
         sig = signal(s)
+        timing = precise_entry(history["BTC"])
+        manip = detect_manipulation(history["BTC"])
 
-        if sig != "⚪ WAIT":
+        if manip:
+            await context.bot.send_message(chat_id=context.job.chat_id, text=manip)
+
+        if sig != "⚪ WAIT" and timing == "🎯 ENTRY" and not manip:
             await context.bot.send_message(
                 chat_id=context.job.chat_id,
-                text=f"🚨 {asset}\n{sig}\nScore: {s}"
+                text=f"🔥 ENTRY BTC\n{sig}\nScore: {s}\nTiming: {timing}"
             )
 
 # =========================
-# WEB SERVER (Render)
+# WEB SERVER
 # =========================
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -205,7 +269,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("btc", btc))
     app.add_handler(CommandHandler("news", news))
-    app.add_handler(CommandHandler("macro", macro))
 
     threading.Thread(target=run_web, daemon=True).start()
 
