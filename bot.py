@@ -10,10 +10,19 @@ from telegram.ext import (
 
 TOKEN = os.getenv("TOKEN")
 NEWS_API = os.getenv("NEWSAPI_KEY")
-FMP_API = os.getenv("FMP_API")
 CHAT_ID = os.getenv("CHAT_ID")
 
-last_price = None
+# ===== CACHE =====
+CACHE = {}
+
+def safe_request(url, key):
+    try:
+        r = requests.get(url, timeout=3)
+        data = r.json()
+        CACHE[key] = data
+        return data
+    except:
+        return CACHE.get(key, None)
 
 # =========================
 # START
@@ -25,19 +34,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # =========================
-# BTC
+# BTC (LIVE + CACHE)
 # =========================
 async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        data = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
-        ).json()["bitcoin"]
+    data = safe_request(
+        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+        "btc"
+    )
 
-        price = data["usd"]
-        change = data["usd_24h_change"]
+    if not data:
+        return await update.message.reply_text("⚠️ BTC indisponible")
+
+    try:
+        d = data["bitcoin"]
+        price = d["usd"]
+        change = d["usd_24h_change"]
 
         trend = "📈 Bullish" if change > 1 else "📉 Bearish" if change < -1 else "➡️ Range"
-        manipulation = "⚠️ Oui" if abs(change) > 5 else "Non"
 
         await update.message.reply_text(f"""
 💰 BTC
@@ -46,21 +59,24 @@ Prix : {price}$
 Variation : {round(change,2)}%
 
 Trend : {trend}
-Manipulation : {manipulation}
 """)
-
     except:
-        await update.message.reply_text("⚠️ BTC indisponible")
+        await update.message.reply_text("⚠️ Erreur BTC")
 
 # =========================
-# NASDAQ
+# NASDAQ (LIVE + CACHE)
 # =========================
 async def nasdaq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        r = requests.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC"
-        ).json()["quoteResponse"]["result"][0]
+    data = safe_request(
+        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC",
+        "nasdaq"
+    )
 
+    if not data:
+        return await update.message.reply_text("⚠️ Nasdaq indisponible")
+
+    try:
+        r = data["quoteResponse"]["result"][0]
         price = r["regularMarketPrice"]
         change = r["regularMarketChangePercent"]
 
@@ -74,78 +90,87 @@ Variation : {round(change,2)}%
 
 {sens}
 """)
-
     except:
-        await update.message.reply_text("⚠️ Nasdaq indisponible")
+        await update.message.reply_text("⚠️ Erreur Nasdaq")
 
 # =========================
-# MACRO
+# MACRO (DXY LIVE)
 # =========================
 async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = safe_request(
+        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=DX-Y.NYB",
+        "dxy"
+    )
+
+    if not data:
+        return await update.message.reply_text("⚠️ Macro indisponible")
+
     try:
-        gold = requests.get(
-            f"https://financialmodelingprep.com/api/v3/quote/XAUUSD?apikey={FMP_API}"
-        ).json()[0]["price"]
+        dxy = data["quoteResponse"]["result"][0]["regularMarketPrice"]
 
-        oil = requests.get(
-            f"https://financialmodelingprep.com/api/v3/quote/CLUSD?apikey={FMP_API}"
-        ).json()[0]["price"]
-
-        dxy = requests.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=DX-Y.NYB"
-        ).json()["quoteResponse"]["result"][0]["regularMarketPrice"]
+        analyse = "📉 Pression marchés" if dxy > 104 else "📈 Favorable actifs risqués"
 
         await update.message.reply_text(f"""
 🌍 MACRO
 
-🟡 Or : {gold}
-🛢 Oil : {oil}
-💵 DXY : {dxy}
-""")
+💵 Dollar (DXY) : {dxy}
 
+{analyse}
+""")
     except:
-        await update.message.reply_text("⚠️ Données macro indisponibles")
+        await update.message.reply_text("⚠️ Erreur macro")
 
 # =========================
 # NEWS
 # =========================
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        data = requests.get(
-            f"https://newsapi.org/v2/top-headlines?category=business&apiKey={NEWS_API}"
-        ).json()
+    data = safe_request(
+        f"https://newsapi.org/v2/top-headlines?category=business&apiKey={NEWS_API}",
+        "news"
+    )
 
-        articles = data["articles"][:3]
+    if not data:
+        return await update.message.reply_text("⚠️ News indisponibles")
+
+    try:
+        articles = data.get("articles", [])[:3]
 
         msg = "📰 NEWS\n\n"
+
         for a in articles:
             msg += f"{a['title']}\n➡️ Impact marché possible\n\n"
 
         await update.message.reply_text(msg)
-
     except:
-        await update.message.reply_text("⚠️ News indisponibles")
+        await update.message.reply_text("⚠️ Erreur news")
 
 # =========================
-# DECISION HEDGE FUND
+# DECISION (SAFE)
 # =========================
 async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    btc_data = safe_request(
+        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true",
+        "btc"
+    )
+
+    nasdaq_data = safe_request(
+        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC",
+        "nasdaq"
+    )
+
+    dxy_data = safe_request(
+        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=DX-Y.NYB",
+        "dxy"
+    )
+
+    if not btc_data or not nasdaq_data or not dxy_data:
+        return await update.message.reply_text("⚠️ Données insuffisantes")
+
     try:
-        btc = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
-        ).json()["bitcoin"]
-
-        btc_change = btc["usd_24h_change"]
-
-        nasdaq = requests.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC"
-        ).json()["quoteResponse"]["result"][0]
-
-        nasdaq_change = nasdaq["regularMarketChangePercent"]
-
-        dxy = requests.get(
-            "https://query1.finance.yahoo.com/v7/finance/quote?symbols=DX-Y.NYB"
-        ).json()["quoteResponse"]["result"][0]["regularMarketPrice"]
+        btc_change = btc_data["bitcoin"]["usd_24h_change"]
+        nasdaq_change = nasdaq_data["quoteResponse"]["result"][0]["regularMarketChangePercent"]
+        dxy = dxy_data["quoteResponse"]["result"][0]["regularMarketPrice"]
 
         score = 50
 
@@ -166,22 +191,20 @@ async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         score = max(0, min(100, score))
 
-        if score > 65:
-            signal = "🟢 BUY"
-        elif score < 35:
-            signal = "🔴 SELL"
-        else:
-            signal = "🟡 WAIT"
+        signal = "🟢 BUY" if score > 65 else "🔴 SELL" if score < 35 else "🟡 WAIT"
 
         await update.message.reply_text(f"""
 🧠 DÉCISION
 
 Score : {score}/100
 Signal : {signal}
-""")
 
+BTC : {round(btc_change,2)}%
+NASDAQ : {round(nasdaq_change,2)}%
+DXY : {dxy}
+""")
     except:
-        await update.message.reply_text("❌ Erreur décision")
+        await update.message.reply_text("⚠️ Erreur décision")
 
 # =========================
 # ALERTES AUTO BTC
@@ -189,10 +212,16 @@ Signal : {signal}
 async def auto_alerts(context: ContextTypes.DEFAULT_TYPE):
     global last_price
 
+    data = safe_request(
+        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+        "btc_price"
+    )
+
+    if not data:
+        return
+
     try:
-        price = requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        ).json()["bitcoin"]["usd"]
+        price = data["bitcoin"]["usd"]
 
         if last_price:
             diff = ((price - last_price) / last_price) * 100
@@ -204,7 +233,6 @@ async def auto_alerts(context: ContextTypes.DEFAULT_TYPE):
                 )
 
         last_price = price
-
     except:
         pass
 
