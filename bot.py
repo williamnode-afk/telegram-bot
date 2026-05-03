@@ -1,18 +1,14 @@
 import requests
 import time
 import os
-import logging
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ================= CONFIG =================
 TOKEN = os.getenv("TOKEN")
 NEWS_API = os.getenv("NEWSAPI_KEY")
+CHAT_ID = os.getenv("CHAT_ID")
 
-# ================= LOGS =================
-logging.basicConfig(level=logging.INFO)
-
-# ================= CACHE =================
+# ================= SAFE REQUEST + CACHE =================
 CACHE = {}
 
 def safe_request(url, key):
@@ -27,24 +23,13 @@ def safe_request(url, key):
         return data
 
     except Exception as e:
-        logging.error(f"API ERROR {key}: {e}")
+        print("API ERROR:", e)
         return CACHE.get(key, {}).get("data", None)
-
-# ================= RISK MANAGEMENT =================
-def risk_management(score):
-    if score >= 80:
-        return "🔥 RISQUE ÉLEVÉ"
-    elif score >= 60:
-        return "⚡ RISQUE MODÉRÉ"
-    elif score >= 40:
-        return "🛡️ RISQUE FAIBLE"
-    else:
-        return "❄️ MARCHÉ FAIBLE"
 
 # ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔥 BOT TRADING HEDGE FUND PRO\n\n"
+        "🔥 BOT TRADING HEDGE FUND\n\n"
         "/btc\n/nasdaq\n/macro\n/news\n/decision\n/central"
     )
 
@@ -80,8 +65,10 @@ async def nasdaq(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         result = data.get("quoteResponse", {}).get("result", [])
-        d = result[0]
+        if not result:
+            raise Exception()
 
+        d = result[0]
         price = d.get("regularMarketPrice", 0)
         change = d.get("regularMarketChangePercent", 0)
 
@@ -127,11 +114,13 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ News indisponibles")
         return
 
-    msg = "📰 NEWS\n\n"
-    for a in data.get("articles", [])[:3]:
-        msg += f"{a.get('title','...')}\n\n"
-
-    await update.message.reply_text(msg)
+    try:
+        msg = "📰 NEWS\n\n"
+        for a in data.get("articles", [])[:3]:
+            msg += f"{a.get('title','...')}\n\n"
+        await update.message.reply_text(msg)
+    except:
+        await update.message.reply_text("⚠️ Erreur news")
 
 # ================= DECISION =================
 async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,11 +143,10 @@ async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("⚠️ Erreur décision")
 
-# ================= CENTRAL PRO =================
+# ================= BOT CENTRAL HEDGE FUND =================
 async def central(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         score = 50
-        details = []
 
         btc = safe_request("https://api.coingecko.com/api/v3/coins/bitcoin", "btc")
         btc_change = btc.get("market_data", {}).get("price_change_percentage_24h", 0) if btc else 0
@@ -177,58 +165,34 @@ async def central(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gold_change = g.get("regularMarketChangePercent", 0)
         brent_price = b.get("regularMarketPrice", 0)
 
-        if btc_change > 2:
-            score += 20
-            details.append("BTC bullish")
-        elif btc_change < -2:
-            score -= 20
-            details.append("BTC bearish")
-
-        if n_change > 1:
-            score += 15
-            details.append("NASDAQ bullish")
-        elif n_change < -1:
-            score -= 15
-            details.append("NASDAQ bearish")
-
-        if gold_change > 0:
-            score -= 10
-            details.append("Risk OFF")
-        else:
-            score += 10
-
-        if brent_price > 85:
-            score -= 5
-        else:
-            score += 5
+        score += 20 if btc_change > 2 else -20 if btc_change < -2 else 0
+        score += 15 if n_change > 1 else -15 if n_change < -1 else 0
+        score += -10 if gold_change > 0 else 10
+        score += -5 if brent_price > 85 else 5
 
         manipulation = abs(btc_change) > 5 and volume > 30_000_000_000
         divergence = (btc_change > 0 and n_change < 0) or (btc_change < 0 and n_change > 0)
 
-        if manipulation:
-            signal = "⛔ MANIPULATION"
-        elif divergence:
-            signal = "⚠️ DIVERGENCE"
+        if manipulation or divergence:
+            signal = "⛔ PAS DE TRADE"
+            timing = "⚠️ Marché instable"
         else:
-            if score >= 85:
-                signal = "🚀 BUY AGRESSIF"
-            elif score >= 70:
+            if score >= 80:
+                signal = "🟢 BUY FORT"
+            elif score >= 65:
                 signal = "🟢 BUY"
-            elif score <= 15:
-                signal = "💀 SELL AGRESSIF"
-            elif score <= 35:
+            elif score <= 20:
+                signal = "🔴 SELL FORT"
+            elif score <= 45:
                 signal = "🔴 SELL"
             else:
-                signal = "🟡 WAIT"
-
-        risk = risk_management(score)
+                signal = "🟡 ATTENTE"
+            timing = "🎯 Entrée possible"
 
         await update.message.reply_text(
-            f"🧠 BOT CENTRAL PRO\n\nScore : {score}/100\nSignal : {signal}\n{risk}\n\n📊 {', '.join(details)}"
+            f"🧠 BOT CENTRAL\n\nScore : {score}/100\nSignal : {signal}\n{timing}"
         )
-
-    except Exception as e:
-        logging.error(e)
+    except:
         await update.message.reply_text("⚠️ Erreur central")
 
 # ================= MAIN =================
@@ -243,7 +207,6 @@ def main():
     app.add_handler(CommandHandler("decision", decision))
     app.add_handler(CommandHandler("central", central))
 
-    print("✅ BOT LANCÉ")
     app.run_polling()
 
 if __name__ == "__main__":
