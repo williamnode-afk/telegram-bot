@@ -39,6 +39,23 @@ async def main():
 
 # ===== LANCEMENT =====
 
+def main():
+    print("BOT STARTED")
+
+    if not TOKEN:
+        raise ValueError("TOKEN MANQUANT")
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("btc", btc))
+    app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("macro", macro))
+
+    print("BOT RUNNING 🚀")
+
+    app.run_polling(drop_pending_updates=True)
+
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()
