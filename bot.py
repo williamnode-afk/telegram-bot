@@ -1,15 +1,26 @@
 import os
+import time
 import requests
-import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
+CRYPTO_API = os.getenv("CRYPTO_API")
+FMP_API = os.getenv("FMP_API")
 
 # =========================
-# DATA STORAGE
+# TELEGRAM FIX
+# =========================
+def clear_webhook():
+    try:
+        requests.get(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook")
+    except:
+        pass
+
+# =========================
+# DATA
 # =========================
 history = {
     "BTC": [],
@@ -18,23 +29,26 @@ history = {
     "BRENT": []
 }
 
-params = {
-    "rsi_buy": 30,
-    "rsi_sell": 70
-}
-
-active_trade = None
+last_signal = {}
+cooldown = {}
 
 # =========================
-# DATA FETCH
+# FETCH DATA
 # =========================
 def get_price(symbol):
-    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
-    data = requests.get(url).json()
-    return data["quoteResponse"]["result"][0]["regularMarketPrice"]
+    try:
+        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
+        return requests.get(url).json()["quoteResponse"]["result"][0]["regularMarketPrice"]
+    except:
+        return None
 
 def get_btc():
-    return requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd").json()["bitcoin"]["usd"]
+    try:
+        return requests.get(
+            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+        ).json()["bitcoin"]["usd"]
+    except:
+        return None
 
 # =========================
 # INDICATORS
@@ -42,188 +56,143 @@ def get_btc():
 def rsi(prices):
     if len(prices) < 10:
         return None
-
     gains, losses = [], []
     for i in range(1, len(prices)):
         diff = prices[i] - prices[i-1]
-        if diff > 0:
-            gains.append(diff)
-        else:
-            losses.append(abs(diff))
-
+        (gains if diff > 0 else losses).append(abs(diff))
     avg_gain = sum(gains)/len(gains) if gains else 0.01
     avg_loss = sum(losses)/len(losses) if losses else 0.01
-
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 def spike(prices):
     if len(prices) < 5:
         return False
-    change = abs((prices[-1] - prices[-2]) / prices[-2]) * 100
-    return change > 0.8
+    return abs((prices[-1]-prices[-2])/prices[-2]*100) > 0.8
 
-def market_mode(prices):
+def volatility(prices):
     if len(prices) < 10:
-        return "UNKNOWN"
-    return "TREND" if (max(prices) - min(prices)) > prices[-1] * 0.02 else "RANGE"
+        return 0
+    returns = [(prices[i]-prices[i-1]) for i in range(1, len(prices))]
+    avg = sum(returns)/len(returns)
+    var = sum((r-avg)**2 for r in returns)/len(returns)
+    return var**0.5
 
 # =========================
 # STRATEGIES
 # =========================
-def strat_trend(prices):
-    if len(prices) < 10:
-        return 0
-    change = (prices[-1] - prices[0]) / prices[0] * 100
-    return 1 if change > 1 else (-1 if change < -1 else 0)
+def strat_trend(p):
+    return 1 if p[-1] > p[0] else -1
 
-def strat_mean(prices):
-    r = rsi(prices)
-    if not r:
-        return 0
-    if r < params["rsi_buy"]:
-        return 1
-    elif r > params["rsi_sell"]:
-        return -1
-    return 0
+def strat_breakout(p):
+    return 1 if p[-1] >= max(p[-10:]) else (-1 if p[-1] <= min(p[-10:]) else 0)
 
-def strat_breakout(prices):
-    if len(prices) < 10:
-        return 0
-    if prices[-1] >= max(prices[-10:]):
-        return 1
-    elif prices[-1] <= min(prices[-10:]):
-        return -1
+def strat_mean(p):
+    r = rsi(p)
+    if not r: return 0
+    if r < 30: return 1
+    if r > 70: return -1
     return 0
 
 # =========================
 # SCORE
 # =========================
-def adaptive_score(prices):
+def adaptive_score(p):
     score = 50
-    score += strat_trend(prices) * 15
-    score += strat_mean(prices) * 10
-    score += strat_breakout(prices) * 15
-    if spike(prices):
-        score += 5
+    score += strat_trend(p)*15
+    score += strat_breakout(p)*15
+    score += strat_mean(p)*10
+    if spike(p): score += 5
+    if volatility(p) > 5: score += 5
     return max(0, min(100, score))
 
 def final_signal(score):
-    if score >= 70:
-        return "🟢 BUY"
-    elif score <= 30:
-        return "🔴 SELL"
+    if score >= 80: return "🟢 STRONG BUY"
+    if score >= 65: return "🟢 BUY"
+    if score <= 20: return "🔴 STRONG SELL"
+    if score <= 35: return "🔴 SELL"
     return "⚪ WAIT"
 
 # =========================
-# ORDER FLOW
+# MARKET CONTEXT
 # =========================
-def order_flow():
+def market_context():
+    if len(history["BTC"]) < 10:
+        return "UNKNOWN"
+    btc = history["BTC"][-1] - history["BTC"][0]
+    nasdaq = history["NASDAQ"][-1] - history["NASDAQ"][0]
+    gold = history["GOLD"][-1] - history["GOLD"][0]
+    if btc > 0 and nasdaq > 0: return "🟢 RISK-ON"
+    if btc < 0 and nasdaq < 0 and gold > 0: return "🔴 RISK-OFF"
+    return "⚪ MIXED"
+
+# =========================
+# TIMING
+# =========================
+def precise_timing(p):
+    if len(p) < 10: return "WAIT"
+    high = max(p[-6:-1])
+    if p[-1] > high: return "🎯 ENTRY"
+    return "WAIT"
+
+# =========================
+# MANIPULATION
+# =========================
+def manipulation(p):
+    if len(p) < 5: return None
+    if abs((p[-1]-p[-2])/p[-2]*100) > 1.2:
+        return "🐋 Possible manipulation"
+    return None
+
+# =========================
+# NEWS
+# =========================
+def get_news():
     try:
-        url = "https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=50"
+        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTO_API}&public=true"
         data = requests.get(url).json()
-        bids = sum(float(b[1]) for b in data["bids"])
-        asks = sum(float(a[1]) for a in data["asks"])
-        if bids > asks:
-            return "🟢 Buyers"
-        else:
-            return "🔴 Sellers"
+        return "\n".join([n["title"] for n in data["results"][:3]])
     except:
-        return "N/A"
+        return "No news"
 
 # =========================
-# DASHBOARD
-# =========================
-def dashboard():
-    scores = {k: adaptive_score(v) for k, v in history.items() if len(v) > 10}
-
-    msg = "📊 DASHBOARD\n\n"
-    for k, v in scores.items():
-        msg += f"{k}: {v}/100 → {final_signal(v)}\n"
-
-    msg += f"\nOrderFlow: {order_flow()}"
-    return msg
-
-# =========================
-# TRADE LOG
-# =========================
-def log_trade(trade):
-    try:
-        with open("trades.json", "r") as f:
-            data = json.load(f)
-    except:
-        data = []
-
-    data.append(trade)
-
-    with open("trades.json", "w") as f:
-        json.dump(data, f)
-
-# =========================
-# ANALYSIS
-# =========================
-def analyze_trades():
-    try:
-        with open("trades.json", "r") as f:
-            trades = json.load(f)
-    except:
-        return "Aucune donnée"
-
-    wins = [t for t in trades if t.get("result") == "win"]
-    losses = [t for t in trades if t.get("result") == "loss"]
-
-    total = len(trades)
-    winrate = (len(wins) / total * 100) if total else 0
-
-    return f"Trades: {total}\nWinrate: {winrate:.2f}%"
-
-# =========================
-# SCAN LOOP
+# SCAN
 # =========================
 async def scan(context: ContextTypes.DEFAULT_TYPE):
-    try:
-        btc = get_btc()
-        nasdaq = get_price("^IXIC")
-        gold = get_price("GC=F")
-        brent = get_price("BZ=F")
+    btc = get_btc()
+    nasdaq = get_price("^IXIC")
+    gold = get_price("GC=F")
+    brent = get_price("BZ=F")
 
-        data = {"BTC": btc, "NASDAQ": nasdaq, "GOLD": gold, "BRENT": brent}
+    data = {"BTC": btc, "NASDAQ": nasdaq, "GOLD": gold, "BRENT": brent}
 
-        for k, v in data.items():
+    for k, v in data.items():
+        if v:
             history[k].append(v)
             if len(history[k]) > 50:
                 history[k].pop(0)
 
-        if len(history["BTC"]) > 10:
-            score = adaptive_score(history["BTC"])
-            signal = final_signal(score)
+    for asset in history:
+        if len(history[asset]) < 10:
+            continue
 
-            if signal != "⚪ WAIT":
-                await context.bot.send_message(
-                    chat_id=context.job.chat_id,
-                    text=f"{signal} BTC\nScore: {score}"
-                )
+        score = adaptive_score(history[asset])
+        signal = final_signal(score)
 
-        # dashboard
-        await context.bot.send_message(
-            chat_id=context.job.chat_id,
-            text=dashboard()
-        )
-
-    except Exception as e:
-        print("Erreur scan:", e)
+        if signal != "⚪ WAIT":
+            await context.bot.send_message(
+                chat_id=context.job.chat_id,
+                text=f"🚨 {asset}\n{signal}\nScore: {score}"
+            )
 
 # =========================
-# COMMANDS
+# START
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 BOT TRADING ULTRA PRO ACTIF")
+    await update.message.reply_text("🔥 BOT NEWS PRO ACTIF")
 
     chat_id = update.effective_chat.id
     context.job_queue.run_repeating(scan, interval=60, first=5, chat_id=chat_id)
-
-async def stats_cmd(update, context):
-    await update.message.reply_text(analyze_trades())
 
 # =========================
 # WEB DASHBOARD
@@ -233,25 +202,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
-        self.wfile.write(f"<h1>{dashboard()}</h1>".encode())
+        self.wfile.write("Bot actif".encode())
 
 def start_web():
-    server = HTTPServer(("0.0.0.0", 8000), Handler)
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
 
 # =========================
 # MAIN
 # =========================
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    clear_webhook()
+    time.sleep(2)
 
+    app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("stats", stats_cmd))
 
     threading.Thread(target=start_web, daemon=True).start()
 
-    print("BOT ULTRA PRO LANCÉ")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
