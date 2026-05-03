@@ -1,215 +1,256 @@
 import os
 import requests
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")  # optionnel
 
 # =========================
-# 📰 NEWS SOURCES
+# DATA STORAGE
 # =========================
+history = {
+    "BTC": [],
+    "NASDAQ": [],
+    "GOLD": [],
+    "BRENT": []
+}
 
-def fetch_cryptopanic():
-    try:
-        url = "https://cryptopanic.com/api/v1/posts/?public=true"
-        data = requests.get(url, timeout=5).json()["results"]
-        return [{"title": n["title"], "url": n["url"]} for n in data]
-    except:
-        return []
+params = {
+    "rsi_buy": 30,
+    "rsi_sell": 70
+}
 
-def fetch_newsapi():
-    if not NEWSAPI_KEY:
-        return []
-
-    try:
-        url = f"https://newsapi.org/v2/everything?q=bitcoin OR crypto OR inflation OR fed&language=en&sortBy=publishedAt&apiKey={NEWSAPI_KEY}"
-        data = requests.get(url, timeout=5).json()["articles"]
-        return [{"title": n["title"], "url": n["url"]} for n in data]
-    except:
-        return []
+active_trade = None
 
 # =========================
-# 🧠 FILTRAGE
+# DATA FETCH
 # =========================
+def get_price(symbol):
+    url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
+    data = requests.get(url).json()
+    return data["quoteResponse"]["result"][0]["regularMarketPrice"]
 
-KEYWORDS = [
-    "bitcoin","btc","crypto","fed","inflation","interest",
-    "etf","sec","regulation","market","rate","crash","bull"
-]
-
-def filter_news(news):
-    unique = []
-    seen = set()
-
-    for n in news:
-        title = n["title"].lower()
-
-        if len(title) < 20:
-            continue
-
-        if not any(k in title for k in KEYWORDS):
-            continue
-
-        if title in seen:
-            continue
-
-        seen.add(title)
-        unique.append(n)
-
-    return unique[:10]
-
-def get_news():
-    news = fetch_cryptopanic() + fetch_newsapi()
-    return filter_news(news)
+def get_btc():
+    return requests.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd").json()["bitcoin"]["usd"]
 
 # =========================
-# 📈 SENTIMENT + IMPACT
+# INDICATORS
 # =========================
+def rsi(prices):
+    if len(prices) < 10:
+        return None
 
-def analyze_sentiment(title):
-    t = title.lower()
+    gains, losses = [], []
+    for i in range(1, len(prices)):
+        diff = prices[i] - prices[i-1]
+        if diff > 0:
+            gains.append(diff)
+        else:
+            losses.append(abs(diff))
 
-    bull = ["rise","surge","bull","growth","approval","adoption","pump"]
-    bear = ["crash","drop","fall","ban","fear","lawsuit","dump"]
+    avg_gain = sum(gains)/len(gains) if gains else 0.01
+    avg_loss = sum(losses)/len(losses) if losses else 0.01
 
-    score = sum(1 for w in bull if w in t) - sum(1 for w in bear if w in t)
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-    if score > 0:
-        return "📈 Bullish", score
-    elif score < 0:
-        return "📉 Bearish", score
-    return "⚖️ Neutral", 0
+def spike(prices):
+    if len(prices) < 5:
+        return False
+    change = abs((prices[-1] - prices[-2]) / prices[-2]) * 100
+    return change > 0.8
 
-def impact_score(title):
-    t = title.lower()
-    important = ["fed","inflation","etf","sec","interest","bitcoin"]
-
-    return sum(2 for w in important if w in t)
-
-# =========================
-# 📊 GLOBAL MARKET ANALYSIS
-# =========================
-
-def global_market_analysis(news):
-    total = 0
-
-    for n in news:
-        _, s = analyze_sentiment(n["title"])
-        impact = impact_score(n["title"])
-        total += s * (impact + 1)
-
-    if not news:
-        return "NEUTRAL", 0
-
-    avg = total / len(news)
-
-    if avg > 1:
-        return "📈 BULLISH", avg
-    elif avg < -1:
-        return "📉 BEARISH", avg
-    return "⚖️ NEUTRAL", avg
-
-def confidence(score):
-    s = abs(score)
-
-    if s > 3:
-        return "🔥🔥🔥"
-    elif s > 2:
-        return "🔥🔥"
-    elif s > 1:
-        return "🔥"
-    return "❄️"
+def market_mode(prices):
+    if len(prices) < 10:
+        return "UNKNOWN"
+    return "TREND" if (max(prices) - min(prices)) > prices[-1] * 0.02 else "RANGE"
 
 # =========================
-# 💰 BTC PRICE (corrélation simple)
+# STRATEGIES
 # =========================
-
-def btc_price():
-    try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT").json()
-        return float(r["price"])
-    except:
+def strat_trend(prices):
+    if len(prices) < 10:
         return 0
+    change = (prices[-1] - prices[0]) / prices[0] * 100
+    return 1 if change > 1 else (-1 if change < -1 else 0)
+
+def strat_mean(prices):
+    r = rsi(prices)
+    if not r:
+        return 0
+    if r < params["rsi_buy"]:
+        return 1
+    elif r > params["rsi_sell"]:
+        return -1
+    return 0
+
+def strat_breakout(prices):
+    if len(prices) < 10:
+        return 0
+    if prices[-1] >= max(prices[-10:]):
+        return 1
+    elif prices[-1] <= min(prices[-10:]):
+        return -1
+    return 0
 
 # =========================
-# 🤖 COMMANDES
+# SCORE
 # =========================
+def adaptive_score(prices):
+    score = 50
+    score += strat_trend(prices) * 15
+    score += strat_mean(prices) * 10
+    score += strat_breakout(prices) * 15
+    if spike(prices):
+        score += 5
+    return max(0, min(100, score))
 
+def final_signal(score):
+    if score >= 70:
+        return "🟢 BUY"
+    elif score <= 30:
+        return "🔴 SELL"
+    return "⚪ WAIT"
+
+# =========================
+# ORDER FLOW
+# =========================
+def order_flow():
+    try:
+        url = "https://api.binance.com/api/v3/depth?symbol=BTCUSDT&limit=50"
+        data = requests.get(url).json()
+        bids = sum(float(b[1]) for b in data["bids"])
+        asks = sum(float(a[1]) for a in data["asks"])
+        if bids > asks:
+            return "🟢 Buyers"
+        else:
+            return "🔴 Sellers"
+    except:
+        return "N/A"
+
+# =========================
+# DASHBOARD
+# =========================
+def dashboard():
+    scores = {k: adaptive_score(v) for k, v in history.items() if len(v) > 10}
+
+    msg = "📊 DASHBOARD\n\n"
+    for k, v in scores.items():
+        msg += f"{k}: {v}/100 → {final_signal(v)}\n"
+
+    msg += f"\nOrderFlow: {order_flow()}"
+    return msg
+
+# =========================
+# TRADE LOG
+# =========================
+def log_trade(trade):
+    try:
+        with open("trades.json", "r") as f:
+            data = json.load(f)
+    except:
+        data = []
+
+    data.append(trade)
+
+    with open("trades.json", "w") as f:
+        json.dump(data, f)
+
+# =========================
+# ANALYSIS
+# =========================
+def analyze_trades():
+    try:
+        with open("trades.json", "r") as f:
+            trades = json.load(f)
+    except:
+        return "Aucune donnée"
+
+    wins = [t for t in trades if t.get("result") == "win"]
+    losses = [t for t in trades if t.get("result") == "loss"]
+
+    total = len(trades)
+    winrate = (len(wins) / total * 100) if total else 0
+
+    return f"Trades: {total}\nWinrate: {winrate:.2f}%"
+
+# =========================
+# SCAN LOOP
+# =========================
+async def scan(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        btc = get_btc()
+        nasdaq = get_price("^IXIC")
+        gold = get_price("GC=F")
+        brent = get_price("BZ=F")
+
+        data = {"BTC": btc, "NASDAQ": nasdaq, "GOLD": gold, "BRENT": brent}
+
+        for k, v in data.items():
+            history[k].append(v)
+            if len(history[k]) > 50:
+                history[k].pop(0)
+
+        if len(history["BTC"]) > 10:
+            score = adaptive_score(history["BTC"])
+            signal = final_signal(score)
+
+            if signal != "⚪ WAIT":
+                await context.bot.send_message(
+                    chat_id=context.job.chat_id,
+                    text=f"{signal} BTC\nScore: {score}"
+                )
+
+        # dashboard
+        await context.bot.send_message(
+            chat_id=context.job.chat_id,
+            text=dashboard()
+        )
+
+    except Exception as e:
+        print("Erreur scan:", e)
+
+# =========================
+# COMMANDS
+# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Bot News Elite actif")
+    await update.message.reply_text("🔥 BOT TRADING ULTRA PRO ACTIF")
 
-async def news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    news = get_news()
+    chat_id = update.effective_chat.id
+    context.job_queue.run_repeating(scan, interval=60, first=5, chat_id=chat_id)
 
-    msg = "📰 NEWS ANALYSÉES\n\n"
-
-    for n in news[:5]:
-        sentiment, score = analyze_sentiment(n["title"])
-        impact = impact_score(n["title"])
-
-        msg += (
-            f"{n['title']}\n"
-            f"{sentiment} | Impact: {impact}\n"
-            f"{n['url']}\n\n"
-        )
-
-    await update.message.reply_text(msg)
-
-async def market(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    news = get_news()
-    bias, score = global_market_analysis(news)
-    conf = confidence(score)
-    price = btc_price()
-
-    msg = (
-        "🧠 MARCHÉ GLOBAL\n\n"
-        f"📊 Bias: {bias}\n"
-        f"📈 Score: {round(score,2)}\n"
-        f"🔥 Confiance: {conf}\n\n"
-        f"💰 BTC: {price:.2f}$"
-    )
-
-    await update.message.reply_text(msg)
+async def stats_cmd(update, context):
+    await update.message.reply_text(analyze_trades())
 
 # =========================
-# 🚨 ALERTES
+# WEB DASHBOARD
 # =========================
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(f"<h1>{dashboard()}</h1>".encode())
 
-last_bias = None
-
-async def smart_alerts(context: ContextTypes.DEFAULT_TYPE):
-    global last_bias
-
-    news = get_news()
-    bias, score = global_market_analysis(news)
-
-    if abs(score) > 2 and bias != last_bias:
-        msg = (
-            "🚨 ALERTE MARCHÉ 🚨\n\n"
-            f"{bias}\n"
-            f"Score: {round(score,2)}"
-        )
-
-        await context.bot.send_message(chat_id=CHAT_ID, text=msg)
-        last_bias = bias
+def start_web():
+    server = HTTPServer(("0.0.0.0", 8000), Handler)
+    server.serve_forever()
 
 # =========================
-# 🚀 MAIN
+# MAIN
 # =========================
-
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("news", news_cmd))
-    app.add_handler(CommandHandler("market", market))
+    app.add_handler(CommandHandler("stats", stats_cmd))
 
-    app.job_queue.run_repeating(smart_alerts, interval=300, first=10)
+    threading.Thread(target=start_web, daemon=True).start()
 
-    print("BOT NEWS ELITE 🚀")
-
+    print("BOT ULTRA PRO LANCÉ")
     app.run_polling()
 
 if __name__ == "__main__":
