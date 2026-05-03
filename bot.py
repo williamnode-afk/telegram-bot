@@ -6,36 +6,22 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
+API_KEY = os.getenv("TWELVE_API")
 
 # =========================
-# CACHE
+# FETCH SAFE
 # =========================
-CACHE = {}
-CACHE_TIME = {}
-
 def fetch(url):
     try:
         return requests.get(url, timeout=3).json()
     except:
         return None
 
-def safe_fetch(key, url):
-    data = fetch(url)
-    if data:
-        CACHE[key] = data
-        CACHE_TIME[key] = time.time()
-        return data
-
-    return CACHE.get(key)
-
 # =========================
 # DATA
 # =========================
 def get_btc():
-    data = safe_fetch(
-        "btc",
-        "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
-    )
+    data = fetch("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true")
     try:
         return {
             "price": data["bitcoin"]["usd"],
@@ -45,32 +31,19 @@ def get_btc():
         return None
 
 def get_nasdaq():
-    data = safe_fetch(
-        "nasdaq",
-        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC"
-    )
+    data = fetch(f"https://api.twelvedata.com/quote?symbol=IXIC&apikey={API_KEY}")
     try:
-        r = data["quoteResponse"]["result"]
-        if not r:
-            return None
-        r = r[0]
         return {
-            "price": r.get("regularMarketPrice"),
-            "change": r.get("regularMarketChangePercent")
+            "price": float(data["price"]),
+            "change": float(data["percent_change"])
         }
     except:
         return None
 
 def get_dxy():
-    data = safe_fetch(
-        "dxy",
-        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=DX-Y.NYB"
-    )
+    data = fetch(f"https://api.twelvedata.com/quote?symbol=DXY&apikey={API_KEY}")
     try:
-        r = data["quoteResponse"]["result"]
-        if not r:
-            return None
-        return r[0].get("regularMarketPrice")
+        return float(data["price"])
     except:
         return None
 
