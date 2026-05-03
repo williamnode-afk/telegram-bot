@@ -1,16 +1,16 @@
 import os
 import time
 import requests
-import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = os.getenv("TOKEN")
 NEWS_API = os.getenv("NEWSAPI_KEY")
+FMP_API = os.getenv("FMP_API")
+CHAT_ID = os.getenv("CHAT_ID")
 
 # =========================
-# FIX TELEGRAM
+# RESET TELEGRAM
 # =========================
 def clear_webhook():
     try:
@@ -19,243 +19,198 @@ def clear_webhook():
         pass
 
 # =========================
-# DATA
+# START
 # =========================
-history = {
-    "BTC": [],
-    "NASDAQ": [],
-    "GOLD": [],
-    "BRENT": []
-}
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔥 BOT TRADING ACTIF\n\n"
+        "Commandes :\n"
+        "/btc → analyse Bitcoin\n"
+        "/nasdaq → analyse Nasdaq\n"
+        "/macro → analyse macro\n"
+        "/news → actualités\n"
+        "/decision → décision marché"
+    )
 
-last_news = []
-
 # =========================
-# FETCH DATA
+# BTC
 # =========================
-def get_price(symbol):
+async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
-        return requests.get(url).json()["quoteResponse"]["result"][0]["regularMarketPrice"]
-    except:
-        return None
+        data = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
 
-def get_btc():
+        price = data["market_data"]["current_price"]["usd"]
+        change = data["market_data"]["price_change_percentage_24h"]
+        volume = data["market_data"]["total_volume"]["usd"]
+
+        score = 50
+        if change > 2:
+            score += 20
+        elif change < -2:
+            score -= 20
+
+        manipulation = "🐋 Mouvement suspect" if abs(change) > 5 and volume > 30_000_000_000 else "✅ Stable"
+
+        signal = "🟢 BUY" if score >= 70 else "🔴 SELL" if score <= 30 else "🟡 WAIT"
+
+        await update.message.reply_text(
+            f"₿ BTC\n\nPrix : {price}$\nVariation : {change:.2f}%\n\n"
+            f"📊 Score : {score}/100\n🎯 Signal : {signal}\n{manipulation}"
+        )
+
+    except:
+        await update.message.reply_text("❌ Erreur BTC")
+
+# =========================
+# NASDAQ
+# =========================
+async def nasdaq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        return requests.get(
-            "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-        ).json()["bitcoin"]["usd"]
+        r = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC").json()
+        data = r["quoteResponse"]["result"][0]
+
+        price = data["regularMarketPrice"]
+        change = data["regularMarketChangePercent"]
+
+        trend = "🟢 Haussier" if change > 1 else "🔴 Baissier" if change < -1 else "🟡 Stable"
+
+        await update.message.reply_text(
+            f"📈 NASDAQ\n\nPrix : {price}\nVariation : {change:.2f}%\n\n🎯 {trend}"
+        )
+
     except:
-        return None
+        await update.message.reply_text("❌ Erreur Nasdaq")
 
 # =========================
-# INDICATORS
+# MACRO
 # =========================
-def rsi(prices):
-    if len(prices) < 10:
-        return None
-    gains, losses = [], []
-    for i in range(1, len(prices)):
-        diff = prices[i] - prices[i-1]
-        (gains if diff > 0 else losses).append(abs(diff))
-    avg_gain = sum(gains)/len(gains) if gains else 0.01
-    avg_loss = sum(losses)/len(losses) if losses else 0.01
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+async def macro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        gold = requests.get(f"https://financialmodelingprep.com/api/v3/quote/GCUSD?apikey={FMP_API}").json()
+        brent = requests.get(f"https://financialmodelingprep.com/api/v3/quote/BZUSD?apikey={FMP_API}").json()
 
-# =========================
-# SCORE
-# =========================
-def score(prices):
-    s = 50
-    if prices[-1] > prices[0]: s += 15
-    if prices[-1] >= max(prices[-10:]): s += 15
-    if prices[-1] <= min(prices[-10:]): s -= 15
+        gold_price = gold[0]["price"] if gold else 0
+        brent_price = brent[0]["price"] if brent else 0
 
-    r = rsi(prices)
-    if r:
-        if r < 30: s += 10
-        elif r > 70: s -= 10
+        gold_state = "🟡 Peur marché" if gold_price > 2000 else "🟢 Confiance"
+        brent_state = "🔥 Inflation" if brent_price > 85 else "❄️ Inflation faible"
 
-    return max(0, min(100, s))
+        await update.message.reply_text(
+            f"🌍 MACRO\n\n🟡 Or : {gold_price}$ → {gold_state}\n"
+            f"🛢️ Brent : {brent_price}$ → {brent_state}"
+        )
 
-def signal(s):
-    if s >= 70: return "🟢 BUY"
-    elif s <= 30: return "🔴 SELL"
-    return "⚪ WAIT"
+    except:
+        await update.message.reply_text("❌ Erreur macro")
 
 # =========================
-# TIMING
+# NEWS + IMPACT
 # =========================
-def precise_entry(p):
-    if len(p) < 12:
-        return "WAIT"
+def analyser_impact_news(t):
+    t = t.lower()
 
-    high = max(p[-6:-1])
-    low = min(p[-6:-1])
+    if "oil" in t or "ormuz" in t:
+        return "🛢️ Impact : pétrole (Brent)"
+    if "inflation" in t:
+        return "📉 Impact : marchés sous pression"
+    if "crypto" in t or "bitcoin" in t:
+        return "₿ Impact : crypto"
+    if "tech" in t or "nasdaq" in t:
+        return "📈 Impact : tech"
+    if "war" in t:
+        return "⚠️ Impact : fuite vers l’or"
 
-    p0, p1, p2 = p[-1], p[-2], p[-3]
+    return "⚪ Impact neutre"
 
-    if p1 <= high and p0 > high:
-        return "BREAKOUT"
-    if p0 < high and p1 > high:
-        return "PULLBACK"
-    if p1 < high and p0 > p1 and p0 > p2:
-        return "🎯 ENTRY"
-    if p1 >= low and p0 < low:
-        return "BREAKDOWN"
-
-    return "WAIT"
-
-# =========================
-# MANIPULATION
-# =========================
-def detect_manipulation(p):
-    if len(p) < 5:
-        return None
-
-    move = (p[-1] - p[-2]) / p[-2] * 100
-    prev = (p[-2] - p[-3]) / p[-3] * 100
-
-    if abs(prev) > 1.2 and abs(move) < 0.2:
-        return "⚠️ Rejet rapide (piège)"
-    if abs(move) > 1.5:
-        return "🐋 Spike suspect"
-
-    return None
-
-# =========================
-# NEWS ANALYSIS
-# =========================
-def analyze_news(text):
-    text = text.lower()
-
-    bullish = ["growth", "surge", "strong", "positive", "beat"]
-    bearish = ["inflation", "war", "crash", "recession", "rate hike"]
-
-    score = 0
-    for w in bullish:
-        if w in text:
-            score += 1
-    for w in bearish:
-        if w in text:
-            score -= 1
-
-    confidence = min(abs(score) * 50, 100)
-
-    if score > 0:
-        return "🟢 BULLISH", "BUY 📈", confidence
-    elif score < 0:
-        return "🔴 BEARISH", "SELL 📉", confidence
-    return "⚪ NEUTRE", "WAIT", confidence
-
-# =========================
-# GET NEWS
-# =========================
-def get_news():
+def get_news_fr():
     url = f"https://newsapi.org/v2/top-headlines?category=business&language=en&apiKey={NEWS_API}"
     r = requests.get(url)
     data = r.json()
-    articles = data.get("articles", [])
 
-    results = []
+    articles = data.get("articles", [])[:3]
 
-    for a in articles[:5]:
+    result = []
+    for a in articles:
         title = a.get("title", "")
+        impact = analyser_impact_news(title)
+        result.append(f"📰 {title}\n➡️ {impact}")
 
-        if title in last_news:
-            continue
-
-        impact, sig, conf = analyze_news(title)
-
-        if conf >= 50:
-            results.append((title, impact, sig, conf))
-            last_news.append(title)
-
-    return results
-
-# =========================
-# COMMANDS
-# =========================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔥 BOT TRADING NEWS ACTIF")
-
-    chat_id = update.effective_chat.id
-    context.job_queue.run_repeating(scan, interval=60, first=5, chat_id=chat_id)
-    context.job_queue.run_repeating(alerts, interval=900, first=10)
-
-async def btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"₿ BTC: {get_btc()}$")
+    return result
 
 async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    news = get_news()
-    if not news:
-        await update.message.reply_text("Aucune news importante")
-        return
+    try:
+        news_list = get_news_fr()
 
-    text = "🚨 NEWS IMPACT\n\n"
-    for t, imp, sig, conf in news:
-        text += f"{t}\n{imp} | {sig} | {conf}%\n\n"
+        msg = "📰 NEWS\n\n"
+        for n in news_list:
+            msg += f"{n}\n\n"
 
-    await update.message.reply_text(text)
+        await update.message.reply_text(msg)
 
-# =========================
-# ALERTS AUTO
-# =========================
-async def alerts(context):
-    news = get_news()
-    if not news:
-        return
-
-    text = "🚨 ALERT NEWS 🔥\n\n"
-    for t, imp, sig, conf in news:
-        text += f"{t}\n{imp} | {sig} | {conf}%\n\n"
-
-    await context.bot.send_message(chat_id=os.getenv("CHAT_ID"), text=text)
+    except:
+        await update.message.reply_text("❌ Erreur news")
 
 # =========================
-# SCAN
+# DECISION (IA)
 # =========================
-async def scan(context):
-    btc = get_btc()
-    nasdaq = get_price("^IXIC")
-    gold = get_price("GC=F")
-    brent = get_price("BZ=F")
+async def decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        score = 50
+        msg = "🧠 DÉCISION MARCHÉ\n\n"
 
-    data = {"BTC": btc, "NASDAQ": nasdaq, "GOLD": gold, "BRENT": brent}
+        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
+        btc_change = btc["market_data"]["price_change_percentage_24h"]
+        btc_volume = btc["market_data"]["total_volume"]["usd"]
 
-    for k, v in data.items():
-        if v:
-            history[k].append(v)
-            if len(history[k]) > 50:
-                history[k].pop(0)
+        nasdaq = requests.get("https://query1.finance.yahoo.com/v7/finance/quote?symbols=^IXIC").json()
+        n_change = nasdaq["quoteResponse"]["result"][0]["regularMarketChangePercent"]
 
-    if len(history["BTC"]) > 10:
-        s = score(history["BTC"])
-        sig = signal(s)
-        timing = precise_entry(history["BTC"])
-        manip = detect_manipulation(history["BTC"])
+        if btc_change > 1: score += 15
+        elif btc_change < -1: score -= 15
 
-        if manip:
-            await context.bot.send_message(chat_id=context.job.chat_id, text=manip)
+        if n_change > 0.5: score += 15
+        elif n_change < -0.5: score -= 15
 
-        if sig != "⚪ WAIT" and timing == "🎯 ENTRY" and not manip:
-            await context.bot.send_message(
-                chat_id=context.job.chat_id,
-                text=f"🔥 ENTRY BTC\n{sig}\nScore: {s}\nTiming: {timing}"
-            )
+        manipulation = "🐋 Mouvement suspect" if abs(btc_change) > 5 and btc_volume > 30_000_000_000 else "✅ Stable"
+
+        if score >= 75:
+            decision = "🟢 BUY FORT"
+        elif score >= 60:
+            decision = "🟢 BUY"
+        elif score <= 30:
+            decision = "🔴 SELL FORT"
+        elif score <= 40:
+            decision = "🔴 SELL"
+        else:
+            decision = "🟡 ATTENTE"
+
+        timing = "🎯 Bon moment" if score > 65 and btc_change > 1 else "⏳ Attente"
+
+        msg += f"📊 Score : {score}/100\n🎯 {decision}\n{manipulation}\n⏱ {timing}"
+
+        await update.message.reply_text(msg)
+
+    except:
+        await update.message.reply_text("❌ Erreur décision")
 
 # =========================
-# WEB SERVER
+# ALERTES AUTO
 # =========================
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot actif")
+async def alertes(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        msg = "🚨 ALERTES\n\n"
 
-def run_web():
-    HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+        btc = requests.get("https://api.coingecko.com/api/v3/coins/bitcoin").json()
+        change = btc["market_data"]["price_change_percentage_24h"]
+
+        if abs(change) > 3:
+            msg += f"₿ BTC mouvement : {change:.2f}%\n\n"
+
+        if msg != "🚨 ALERTES\n\n":
+            await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+
+    except:
+        pass
 
 # =========================
 # MAIN
@@ -268,9 +223,12 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("btc", btc))
+    app.add_handler(CommandHandler("nasdaq", nasdaq))
+    app.add_handler(CommandHandler("macro", macro))
     app.add_handler(CommandHandler("news", news))
+    app.add_handler(CommandHandler("decision", decision))
 
-    threading.Thread(target=run_web, daemon=True).start()
+    app.job_queue.run_repeating(alertes, interval=900, first=10)
 
     app.run_polling(drop_pending_updates=True)
 
